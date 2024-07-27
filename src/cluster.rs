@@ -58,7 +58,7 @@ async fn is_cluster_bootstrapped(State(state): State<WebserverState>) -> AppResu
     let node = if let Some(node) = infos.first() {
         node
     } else {
-        return Err(anyhow::Error::msg("No controllers found").into());
+        return Ok(Json(false));
     };
 
     let result = Command::new("ssh")
