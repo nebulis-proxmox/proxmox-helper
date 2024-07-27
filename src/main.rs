@@ -6,6 +6,7 @@ use network_interface::NetworkInterfaceConfig;
 use once_cell::sync::Lazy;
 use proxmox::{tasks, SharedCatalog};
 use reqwest::cookie::Jar;
+use tower_http::trace::TraceLayer;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::task::JoinHandle;
 use tokio_stream::{wrappers::WatchStream, StreamExt};
@@ -53,12 +54,16 @@ async fn setup_webserver(
 ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
     let address_to_listen = get_exposed_address()?;
 
-    let state = WebserverState { _client: client, catalog };
+    let state = WebserverState {
+        _client: client,
+        catalog,
+    };
 
     let app = Router::new()
         .nest("/cluster", cluster::create_router())
         .route("/", get(|| async { "Hello, World!" }))
-        .with_state(state);
+        .with_state(state)
+        .layer(TraceLayer::new_for_http());
 
     let listener = tokio::net::TcpListener::bind(address_to_listen).await?;
 
