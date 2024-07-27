@@ -55,7 +55,23 @@ async fn is_cluster_bootstrapped(State(state): State<WebserverState>) -> AppResu
 
     let infos = get_node_infos_from_catalogs(controllers, ipams);
 
-    Ok(Json(!infos.is_empty()))
+    let node = if let Some(node) = infos.first() {
+        node
+    } else {
+        return Err(anyhow::Error::msg("No controllers found").into());
+    };
+
+    let result = Command::new("ssh")
+        .arg("-o")
+        .arg("StrictHostKeyChecking=no")
+        .arg("-o")
+        .arg("UserKnownHostsFile=/dev/null")
+        .arg(format!("root@{}", node.ip))
+        .arg("k0s status")
+        .output()
+        .await?;
+
+    Ok(Json(result.status.success()))
 }
 
 #[tracing::instrument(skip(state), err)]
