@@ -36,21 +36,16 @@ impl NodeInfo {
 }
 
 #[derive(Serialize, Deserialize)]
-struct ClusterCertificateConfig {
+struct ClusterConfig {
     server: String,
     #[serde(rename = "certificate-authority-data")]
     certificate_authority_data: String,
 }
 
 #[derive(Serialize, Deserialize)]
-struct ClusterConfig {
-    cluster: ClusterCertificateConfig,
-    name: String,
-}
-
-#[derive(Serialize, Deserialize)]
 struct ClustersConfig {
-    cluster: Vec<ClusterConfig>,
+    cluster: ClusterConfig,
+    name: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -61,7 +56,7 @@ struct ContextConfig {
 
 #[derive(Serialize, Deserialize)]
 struct ContextsConfig {
-    context: Vec<ContextConfig>,
+    context: ContextConfig,
     name: String,
 }
 
@@ -75,7 +70,7 @@ struct UserConfig {
 
 #[derive(Serialize, Deserialize)]
 struct UsersConfig {
-    user: Vec<UserConfig>,
+    user: UserConfig,
     name: String,
 }
 
@@ -303,12 +298,7 @@ async fn create_user_kubeconfig(
     let mut kube_config: KubeConfig = serde_yaml::from_str(&yaml)?;
 
     kube_config.clusters.iter_mut().for_each(|cluster| {
-        cluster.cluster.iter_mut().for_each(|cluster| {
-            cluster
-                .cluster
-                .server
-                .clone_from(&CONFIG.k8s_api_server_url)
-        })
+        cluster.cluster.server.clone_from(&CONFIG.k8s_api_server_url)
     });
 
     Ok(serde_yaml::to_string(&kube_config)?)
