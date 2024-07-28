@@ -11,6 +11,9 @@ pub(crate) struct Config {
     #[clap(long, env, default_value = "https://localhost:8006")]
     pub proxmox_api_url: String,
 
+    #[clap(long, env, default_value = "https://localhost:6443")]
+    pub k8s_api_server_url: String,
+
     #[clap(long, env)]
     pub proxmox_api_user: String,
 

@@ -5,14 +5,13 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::{io, process::Command};
-use tracing::debug;
 
 use crate::{
     error::AppResult,
     proxmox::{ProxmoxIpamEntries, ProxmoxVirtualMachineEntries},
-    WebserverState,
+    WebserverState, CONFIG,
 };
 
 #[derive(Serialize)]
@@ -34,6 +33,63 @@ impl NodeInfo {
             .output()
             .await
     }
+}
+
+#[derive(Serialize, Deserialize)]
+struct ClusterCertificateConfig {
+    server: String,
+    #[serde(rename = "certificate-authority-data")]
+    certificate_authority_data: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ClusterConfig {
+    cluster: ClusterCertificateConfig,
+    name: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ClustersConfig {
+    cluster: Vec<ClusterConfig>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ContextConfig {
+    cluster: String,
+    user: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ContextsConfig {
+    context: Vec<ContextConfig>,
+    name: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct UserConfig {
+    #[serde(rename = "client-certificate-data")]
+    client_certificate_data: String,
+    #[serde(rename = "client-key-data")]
+    client_key_data: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct UsersConfig {
+    user: Vec<UserConfig>,
+    name: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct KubeConfig {
+    #[serde(rename = "apiVersion")]
+    api_version: String,
+    clusters: Vec<ClustersConfig>,
+    contexts: Vec<ContextsConfig>,
+    #[serde(rename = "current-context")]
+    current_context: String,
+    kind: String,
+    preferences: serde_yaml::Value,
+    users: Vec<UsersConfig>,
 }
 
 fn get_node_infos_from_catalogs(
@@ -193,7 +249,7 @@ async fn create_user_kubeconfig(
     State(state): State<WebserverState>,
     Path(user): Path<String>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-) -> AppResult<Vec<u8>> {
+) -> AppResult<String> {
     let controllers = state.catalog.get_controllers().await;
     let ipams = state.catalog.get_ipams().await;
 
@@ -240,11 +296,22 @@ async fn create_user_kubeconfig(
         "k0s kubectl create clusterrolebinding --kubeconfig /root/{user}-kubeconfig {user}-admin-binding --clusterrole=admin --user={user}"
     )).await?;
 
-    node.execute_command(&format!(
-        "rm -f /root/{user}-kubeconfig"
-    )).await?;
+    node.execute_command(&format!("rm -f /root/{user}-kubeconfig"))
+        .await?;
 
-    Ok(kube_config)
+    let yaml = String::from_utf8(kube_config)?;
+    let mut kube_config: KubeConfig = serde_yaml::from_str(&yaml)?;
+
+    kube_config.clusters.iter_mut().for_each(|cluster| {
+        cluster.cluster.iter_mut().for_each(|cluster| {
+            cluster
+                .cluster
+                .server
+                .clone_from(&CONFIG.k8s_api_server_url)
+        })
+    });
+
+    Ok(serde_yaml::to_string(&kube_config)?)
 }
 
 pub(crate) fn create_router() -> Router<super::WebserverState> {
