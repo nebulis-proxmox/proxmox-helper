@@ -216,11 +216,35 @@ async fn create_user_kubeconfig(
 
     let result = String::from_utf8(result.stdout)?.trim().to_string();
 
-    let role_bindings = result.split("\n").collect::<Vec<_>>();
+    let role_bindings = result
+        .split("\n")
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
 
-    debug!("Role bindings: {:?}", role_bindings);
+    for role_binding in role_bindings {
+        node.execute_command(&format!(
+            "k0s kubectl delete clusterrolebinding {role_binding} --all-namespaces"
+        ))
+        .await?;
+    }
 
-    todo!()
+    let result = node
+        .execute_command(&format!(
+            "k0s kubeconfig create --groups \"system:masters\" {user} | tee /root/{user}-kubeconfig"
+        ))
+        .await?;
+
+    let kube_config = result.stdout;
+
+    node.execute_command(&format!(
+        "k0s kubectl create clusterrolebinding --kubeconfig /root/{user}-kubeconfig {user}-admin-binding --clusterrole=admin --user={user}"
+    )).await?;
+
+    node.execute_command(&format!(
+        "rm -f /root/{user}-kubeconfig"
+    )).await?;
+
+    Ok(kube_config)
 }
 
 pub(crate) fn create_router() -> Router<super::WebserverState> {
