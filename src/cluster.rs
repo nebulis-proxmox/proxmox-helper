@@ -1,12 +1,13 @@
 use std::{ffi::OsStr, net::SocketAddr, process::Output};
 
 use axum::{
-    extract::{ConnectInfo, State},
+    extract::{ConnectInfo, Path, State},
     routing::{get, post},
     Json, Router,
 };
 use serde::Serialize;
 use tokio::{io, process::Command};
+use tracing::debug;
 
 use crate::{
     error::AppResult,
@@ -187,6 +188,41 @@ async fn fetch_vrrp_password(
     Ok(result.stdout)
 }
 
+#[tracing::instrument(skip(state), err)]
+async fn create_user_kubeconfig(
+    State(state): State<WebserverState>,
+    Path(user): Path<String>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> AppResult<Vec<u8>> {
+    let controllers = state.catalog.get_controllers().await;
+    let ipams = state.catalog.get_ipams().await;
+
+    let infos = get_node_infos_from_catalogs(controllers, ipams)
+        .into_iter()
+        .filter(|node| node.ip != addr.ip().to_string())
+        .collect::<Vec<_>>();
+
+    let node = if let Some(node) = infos.first() {
+        node
+    } else {
+        return Err(anyhow::Error::msg("No controllers found").into());
+    };
+
+    let result = node
+        .execute_command(&format!(
+            "k0s kubectl get clusterrolebinding | grep {user} | awk '{{print $1}}'"
+        ))
+        .await?;
+
+    let result = String::from_utf8(result.stdout)?.trim().to_string();
+
+    let role_bindings = result.split("\n").collect::<Vec<_>>();
+
+    debug!("Role bindings: {:?}", role_bindings);
+
+    todo!()
+}
+
 pub(crate) fn create_router() -> Router<super::WebserverState> {
     Router::new()
         .route("/bootstrapped", get(is_cluster_bootstrapped))
@@ -195,4 +231,5 @@ pub(crate) fn create_router() -> Router<super::WebserverState> {
         .route("/workers", get(get_workers_infos))
         .route("/workers/token", post(create_worker_token))
         .route("/vrrp/password", get(fetch_vrrp_password))
+        .route("/user/:user", post(create_user_kubeconfig))
 }
