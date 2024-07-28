@@ -1,0 +1,25 @@
+[package]
+name = "k0s-proxmox-helper"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { workspace = true }
+axum = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+console-subscriber = { workspace = true }
+dotenv = { workspace = true }
+mktemp = { workspace = true }
+network-interface = { workspace = true }
+once_cell = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+proxmox-api = { workspace = true }
+
+serde_yaml = "0.9.34"

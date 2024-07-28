@@ -1,13 +1,12 @@
-pub mod api;
-pub mod tasks;
-
 use std::{
     hash::{DefaultHasher, Hash, Hasher},
     sync::Arc,
 };
 
-pub use api::*;
-use tasks::{ControllerSharedCatalog, IpamSharedCatalog, NodeSharedCatalog, WorkerSharedCatalog};
+use crate::tasks::{
+    ControllerSharedCatalog, IpamSharedCatalog, NodeSharedCatalog, WorkerSharedCatalog,
+};
+use crate::{ProxmoxData, ProxmoxIpamEntries, ProxmoxNodeEntries, ProxmoxVirtualMachineEntries};
 use tokio::{sync::RwLock, task::JoinHandle};
 use tokio_stream::{wrappers::WatchStream, StreamExt};
 use tracing::debug;
@@ -307,14 +306,16 @@ impl Catalog {
 pub type SharedCatalog = Arc<Catalog>;
 
 pub async fn handle_catalog_update(
-    client: reqwest::Client,
+    client: crate::ProxmoxApiClient,
+    interface_name: String,
 ) -> anyhow::Result<(SharedCatalog, JoinHandle<()>)> {
     let catalog = Arc::new(Catalog::default());
 
-    let (nodes_rx, nodes_updater_handle) = tasks::handle_pve_nodes_update(client.clone()).await?;
+    let (nodes_rx, nodes_updater_handle) =
+        crate::tasks::handle_pve_nodes_update(client.clone()).await?;
     let mut nodes_stream = WatchStream::new(nodes_rx.clone());
 
-    let (controllers_rx, controllers_updater_handle) = tasks::handle_tagged_catalog_update(
+    let (controllers_rx, controllers_updater_handle) = crate::tasks::handle_tagged_catalog_update(
         client.clone(),
         catalog.nodes_catalog.clone(),
         "k0s-controller",
@@ -322,7 +323,7 @@ pub async fn handle_catalog_update(
     .await?;
     let mut controllers_stream = WatchStream::new(controllers_rx.clone());
 
-    let (workers_rx, workers_updater_handle) = tasks::handle_tagged_catalog_update(
+    let (workers_rx, workers_updater_handle) = crate::tasks::handle_tagged_catalog_update(
         client.clone(),
         catalog.nodes_catalog.clone(),
         "k0s-worker",
@@ -331,7 +332,7 @@ pub async fn handle_catalog_update(
     let mut workers_stream = WatchStream::new(workers_rx.clone());
 
     let (ipams_rx, ipams_updater_handle) =
-        tasks::handle_ipams_update(client.clone(), catalog.nodes_catalog.clone()).await?;
+        crate::tasks::handle_ipams_update(client.clone(), catalog.nodes_catalog.clone(), interface_name).await?;
     let mut ipams_stream = WatchStream::new(ipams_rx.clone());
 
     let cloned_catalog = catalog.clone();
@@ -366,6 +367,63 @@ pub async fn handle_catalog_update(
                     },
                     Some(workers) = workers_stream.next() => {
                         cloned_catalog.update_workers_and_hash(workers).await;
+                    },
+                    Some(ipams) = ipams_stream.next() => {
+                        cloned_catalog.update_ipams_and_hash(ipams).await;
+                    }
+                }
+            }
+        })?;
+
+    Ok((catalog, handle))
+}
+
+pub async fn handle_full_catalog_update(
+    client: crate::ProxmoxApiClient,
+    interface_name: String,
+) -> anyhow::Result<(SharedCatalog, JoinHandle<()>)> {
+    let catalog = Arc::new(Catalog::default());
+
+    let (nodes_rx, nodes_updater_handle) =
+        crate::tasks::handle_pve_nodes_update(client.clone()).await?;
+    let mut nodes_stream = WatchStream::new(nodes_rx.clone());
+
+    let (vms_rx, vms_updater_handle) = crate::tasks::handle_vms_catalog_update(
+        client.clone(),
+        catalog.nodes_catalog.clone(),
+    )
+    .await?;
+    let mut vms_streams = WatchStream::new(vms_rx.clone());
+
+    let (ipams_rx, ipams_updater_handle) =
+        crate::tasks::handle_ipams_update(client.clone(), catalog.nodes_catalog.clone(), interface_name).await?;
+    let mut ipams_stream = WatchStream::new(ipams_rx.clone());
+
+    let cloned_catalog = catalog.clone();
+
+    let handle = tokio::task::Builder::new()
+        .name("handle_catalog_update")
+        .spawn(async move {
+            tokio::pin!(nodes_updater_handle);
+            tokio::pin!(vms_updater_handle);
+            tokio::pin!(ipams_updater_handle);
+
+            loop {
+                tokio::select! {
+                    _ = &mut nodes_updater_handle => {
+                        break;
+                    },
+                    _ = &mut vms_updater_handle => {
+                        break;
+                    },
+                    _ = &mut ipams_updater_handle => {
+                        break;
+                    },
+                    Some(nodes) = nodes_stream.next() => {
+                        cloned_catalog.update_nodes_and_hash(nodes).await;
+                    },
+                    Some(controllers) = vms_streams.next() => {
+                        cloned_catalog.update_controllers_and_hash(controllers).await;
                     },
                     Some(ipams) = ipams_stream.next() => {
                         cloned_catalog.update_ipams_and_hash(ipams).await;

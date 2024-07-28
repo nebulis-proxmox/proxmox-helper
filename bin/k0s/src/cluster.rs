@@ -5,12 +5,12 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use proxmox_api::{ProxmoxIpamEntries, ProxmoxVirtualMachineEntries};
 use serde::{Deserialize, Serialize};
 use tokio::{io, process::Command};
 
 use crate::{
     error::AppResult,
-    proxmox::{ProxmoxIpamEntries, ProxmoxVirtualMachineEntries},
     WebserverState, CONFIG,
 };
 

@@ -1,9 +1,13 @@
-[package]
-name = "k0s-proxmox-helper"
-version = "0.1.0"
-edition = "2021"
+[workspace]
+resolver = "2"
 
-[dependencies]
+members = [
+    "bin/imds",
+    "bin/k0s",
+    "crates/proxmox-api",
+]
+
+[workspace.dependencies]
 anyhow = "1.0.86"
 axum = { version = "0.7.5", features = ["json"] }
 chrono = "0.4.38"
@@ -15,9 +19,9 @@ network-interface = "2.0.0"
 once_cell = "1.19.0"
 reqwest = { version = "0.12.5", features = ["cookies", "json"] }
 serde = { version = "1.0.204", features = ["derive"] }
-serde_yaml = "0.9.34"
 tokio = { version = "1.39.1", features = ["full"] }
 tokio-stream = { version = "0.1.15", features = ["sync"] }
 tower-http = { version = "0.5.2", features = ["trace"] }
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+proxmox-api = { path = "crates/proxmox-api" }

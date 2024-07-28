@@ -1,29 +1,27 @@
 use anyhow::Context;
-use axum::{routing::get, Router};
+use axum::Router;
 use clap::Parser;
 use config::Config;
 use network_interface::NetworkInterfaceConfig;
 use once_cell::sync::Lazy;
-use proxmox::{tasks, SharedCatalog};
-use reqwest::cookie::Jar;
-use tower_http::trace::TraceLayer;
-use std::{net::SocketAddr, sync::Arc};
+use proxmox_api::SharedCatalog;
+use std::net::SocketAddr;
 use tokio::task::JoinHandle;
 use tokio_stream::{wrappers::WatchStream, StreamExt};
+use tower_http::trace::TraceLayer;
 use tracing::{debug, warn};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
-mod cluster;
 mod config;
 mod error;
+mod metadata;
 mod models;
-mod proxmox;
 
 static CONFIG: Lazy<Config> = Lazy::new(Config::parse);
 
 #[derive(Clone)]
 pub(crate) struct WebserverState {
-    pub _client: reqwest::Client,
+    pub _client: proxmox_api::ProxmoxApiClient,
     pub catalog: SharedCatalog,
 }
 
@@ -49,7 +47,7 @@ fn get_exposed_address() -> anyhow::Result<(std::net::IpAddr, u16)> {
 }
 
 async fn setup_webserver(
-    client: reqwest::Client,
+    client: proxmox_api::ProxmoxApiClient,
     catalog: SharedCatalog,
 ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
     let address_to_listen = get_exposed_address()?;
@@ -60,8 +58,7 @@ async fn setup_webserver(
     };
 
     let app = Router::new()
-        .nest("/cluster", cluster::create_router())
-        .route("/", get(|| async { "Hello, World!" }))
+        .nest("/latest/meta-data", metadata::create_router())
         .with_state(state)
         .layer(TraceLayer::new_for_http());
 
@@ -89,21 +86,22 @@ async fn main() -> anyhow::Result<()> {
         .with(fmt::layer().with_filter(EnvFilter::from_default_env()))
         .init();
 
-    let (ticket_rx, ticket_updater_handle) = tasks::handle_pve_authentication().await?;
+    let client = proxmox_api::ProxmoxApiClient::new(&CONFIG.proxmox_api_url)?;
+
+    let (ticket_rx, ticket_updater_handle) = proxmox_api::handle_pve_authentication(
+        client.clone(),
+        &CONFIG.proxmox_api_user,
+        &CONFIG.proxmox_api_password,
+    )
+    .await?;
     let mut ticket_stream = WatchStream::new(ticket_rx.clone());
     tokio::pin!(ticket_updater_handle);
 
-    let cookie_jar = Arc::new(Jar::default());
-    cookie_jar.add_cookie_str(
-        &format!("PVEAuthCookie={}", ticket_rx.borrow().data.ticket),
-        &CONFIG.proxmox_api_url.parse()?,
-    );
-
-    let client = reqwest::ClientBuilder::new()
-        .cookie_provider(cookie_jar.clone())
-        .build()?;
-
-    let (catalog, catalog_updater_handle) = proxmox::handle_catalog_update(client.clone()).await?;
+    let (catalog, catalog_updater_handle) = proxmox_api::handle_full_catalog_update(
+        client.clone(),
+        CONFIG.internal_network_interface.clone(),
+    )
+    .await?;
     tokio::pin!(catalog_updater_handle);
 
     let webserver_handle = setup_webserver(client.clone(), catalog.clone()).await?;
@@ -125,10 +123,7 @@ async fn main() -> anyhow::Result<()> {
             },
             Some(ticket) = ticket_stream.next() => {
                 debug!("Setting new ticket in cookie jar");
-                cookie_jar.add_cookie_str(
-                    &format!("PVEAuthCookie={}", ticket.data.ticket),
-                    &CONFIG.proxmox_api_url.parse()?,
-                );
+                client.update_ticket(&ticket)?;
             }
         }
     }
