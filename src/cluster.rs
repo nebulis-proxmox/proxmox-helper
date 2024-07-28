@@ -1,10 +1,12 @@
+use std::{ffi::OsStr, net::SocketAddr, process::Output};
+
 use axum::{
-    extract::State,
+    extract::{ConnectInfo, State},
     routing::{get, post},
     Json, Router,
 };
 use serde::Serialize;
-use tokio::process::Command;
+use tokio::{io, process::Command};
 
 use crate::{
     error::AppResult,
@@ -17,6 +19,20 @@ pub(crate) struct NodeInfo {
     pub name: String,
     pub ip: String,
     pub status: String,
+}
+
+impl NodeInfo {
+    pub async fn execute_command<S: AsRef<OsStr>>(&self, command: S) -> io::Result<Output> {
+        Command::new("ssh")
+            .arg("-o")
+            .arg("StrictHostKeyChecking=no")
+            .arg("-o")
+            .arg("UserKnownHostsFile=/dev/null")
+            .arg(format!("root@{}", self.ip))
+            .arg(command)
+            .output()
+            .await
+    }
 }
 
 fn get_node_infos_from_catalogs(
@@ -49,11 +65,17 @@ fn get_node_infos_from_catalogs(
 }
 
 #[tracing::instrument(skip(state), err)]
-async fn is_cluster_bootstrapped(State(state): State<WebserverState>) -> AppResult<Json<bool>> {
+async fn is_cluster_bootstrapped(
+    State(state): State<WebserverState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> AppResult<Json<bool>> {
     let controllers = state.catalog.get_controllers().await;
     let ipams = state.catalog.get_ipams().await;
 
-    let infos = get_node_infos_from_catalogs(controllers, ipams);
+    let infos = get_node_infos_from_catalogs(controllers, ipams)
+        .into_iter()
+        .filter(|node| node.ip != addr.ip().to_string())
+        .collect::<Vec<_>>();
 
     let node = if let Some(node) = infos.first() {
         node
@@ -61,15 +83,7 @@ async fn is_cluster_bootstrapped(State(state): State<WebserverState>) -> AppResu
         return Ok(Json(false));
     };
 
-    let result = Command::new("ssh")
-        .arg("-o")
-        .arg("StrictHostKeyChecking=no")
-        .arg("-o")
-        .arg("UserKnownHostsFile=/dev/null")
-        .arg(format!("root@{}", node.ip))
-        .arg("k0s status")
-        .output()
-        .await?;
+    let result = node.execute_command("k0s status").await?;
 
     Ok(Json(result.status.success()))
 }
@@ -96,11 +110,17 @@ async fn get_workers_infos(State(state): State<WebserverState>) -> AppResult<Jso
 }
 
 #[tracing::instrument(skip(state), err)]
-async fn create_controller_token(State(state): State<WebserverState>) -> AppResult<Vec<u8>> {
+async fn create_controller_token(
+    State(state): State<WebserverState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> AppResult<Vec<u8>> {
     let controllers = state.catalog.get_controllers().await;
     let ipams = state.catalog.get_ipams().await;
 
-    let infos = get_node_infos_from_catalogs(controllers, ipams);
+    let infos = get_node_infos_from_catalogs(controllers, ipams)
+        .into_iter()
+        .filter(|node| node.ip != addr.ip().to_string())
+        .collect::<Vec<_>>();
 
     let node = if let Some(node) = infos.first() {
         node
@@ -108,25 +128,25 @@ async fn create_controller_token(State(state): State<WebserverState>) -> AppResu
         return Err(anyhow::Error::msg("No controllers found").into());
     };
 
-    let result = Command::new("ssh")
-        .arg("-o")
-        .arg("StrictHostKeyChecking=no")
-        .arg("-o")
-        .arg("UserKnownHostsFile=/dev/null")
-        .arg(format!("root@{}", node.ip))
-        .arg("k0s token create --role=controller --expiry=1h")
-        .output()
+    let result = node
+        .execute_command("k0s token create --role=controller --expiry=1h")
         .await?;
 
     Ok(result.stdout)
 }
 
 #[tracing::instrument(skip(state), err)]
-async fn create_worker_token(State(state): State<WebserverState>) -> AppResult<Vec<u8>> {
+async fn create_worker_token(
+    State(state): State<WebserverState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> AppResult<Vec<u8>> {
     let controllers = state.catalog.get_controllers().await;
     let ipams = state.catalog.get_ipams().await;
 
-    let infos = get_node_infos_from_catalogs(controllers, ipams);
+    let infos = get_node_infos_from_catalogs(controllers, ipams)
+        .into_iter()
+        .filter(|node| node.ip != addr.ip().to_string())
+        .collect::<Vec<_>>();
 
     let node = if let Some(node) = infos.first() {
         node
@@ -134,14 +154,34 @@ async fn create_worker_token(State(state): State<WebserverState>) -> AppResult<V
         return Err(anyhow::Error::msg("No controllers found").into());
     };
 
-    let result = Command::new("ssh")
-        .arg("-o")
-        .arg("StrictHostKeyChecking=no")
-        .arg("-o")
-        .arg("UserKnownHostsFile=/dev/null")
-        .arg(format!("root@{}", node.ip))
-        .arg("k0s token create --role=worker --expiry=1h")
-        .output()
+    let result = node
+        .execute_command("k0s token create --role=worker --expiry=1h")
+        .await?;
+
+    Ok(result.stdout)
+}
+
+#[tracing::instrument(skip(state), err)]
+async fn fetch_vrrp_password(
+    State(state): State<WebserverState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> AppResult<Vec<u8>> {
+    let controllers = state.catalog.get_controllers().await;
+    let ipams = state.catalog.get_ipams().await;
+
+    let infos = get_node_infos_from_catalogs(controllers, ipams)
+        .into_iter()
+        .filter(|node| node.ip != addr.ip().to_string())
+        .collect::<Vec<_>>();
+
+    let node = if let Some(node) = infos.first() {
+        node
+    } else {
+        return Err(anyhow::Error::msg("No controllers found").into());
+    };
+
+    let result = node
+        .execute_command("yq '.spec.network.controlPlaneLoadBalancing.keepalived.vrrpInstances[0].authPass' /etc/k0s/k0s.yaml")
         .await?;
 
     Ok(result.stdout)
@@ -154,4 +194,5 @@ pub(crate) fn create_router() -> Router<super::WebserverState> {
         .route("/controllers/token", post(create_controller_token))
         .route("/workers", get(get_workers_infos))
         .route("/workers/token", post(create_worker_token))
+        .route("/vrrp/password", get(fetch_vrrp_password))
 }
