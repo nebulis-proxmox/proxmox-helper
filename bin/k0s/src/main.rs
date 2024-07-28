@@ -97,6 +97,8 @@ async fn main() -> anyhow::Result<()> {
     let mut ticket_stream = WatchStream::new(ticket_rx.clone());
     tokio::pin!(ticket_updater_handle);
 
+    client.update_ticket(&ticket_rx.borrow())?;
+
     let (catalog, catalog_updater_handle) = proxmox_api::handle_catalog_update(
         client.clone(),
         CONFIG.internal_network_interface.clone(),
